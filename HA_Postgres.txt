@@ -1,0 +1,245 @@
+sudo apt update 
+sudo apt update -d 
+sudo apt install postgresql postgresql-contrib
+
+
+* configuration on master server
+
+quote
+	> ctrl x : để thoát nano => N: no save | Y + enter: save
+	ctrl w : để search
+step 1: On master server, configure the IP address(es) listen to for connections from clients in postgresql.conf by removing # in front of listen_address and give *. Which means listen connections from all.
+	> sudo nano /etc/postgresql/14/main/postgresql.conf 
+		- listen_address = '*' what ip address to listen on 
+		- port = 5432
+		- pg_ctl -D /tmp/primary_db start => start db 
+		- wal_level = replica
+		- max_wal_senders = 10 
+		- wal_keep_size = 64MB
+		- hot_standby = on
+	
+		- password_encryption = 'md5'
+step 2: connect to PostgreSQL on master server and create replica login
+	> sudo -u postgres psql
+	> SHOW password_encryption;
+	> ALTER SYSTEM SET password_encryption = 'md5';
+	> \q
+
+	> sudo systemctl restart postgresql
+	> sudo -u postgres psql
+	> CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD 'admin@123';
+	> ALTER USER postgres WITH PASSWORD 'admin@123';
+step 3: Enter the following entry pg_hba.conf file which is located in /etc/postgresql/16/main on Ubuntu(debian systems).
+	> sudo nano /etc/postgresql/16/main/pg_hba.conf
+	> host replication replicator 192.168.224.135/24 md5
+step 4: restart the PostgreSQL on Master server by using below command.	
+	> sudo systemctl restart postgresql
+
+* Configurations on slave(standby) server
+step 1: install 
+	> sudo apt update
+	> sudo apt upgrade -y
+	> sudo apt install postgresql postgresql-contrib
+	> sudo systemctl stop postgresql
+step 2: switch to postgres user and take backup of main(data) directory	
+	> su - postgres<br>cp -R /var/lib/postgresql/16/main/ /var/lib/postgresql/16/main_old/
+step 3: remove the contents of main(data) directory on slave server
+	> rm -rf /var/lib/postgresql/16/main/
+step 4: use basebackup to take the base backup with the right ownership with postgres(or any user with right permissions).
+	> pg_basebackup -h 192.168.224.134 -D /var/lib/postgresql/16/main/ -U replicator -P -v -R -X stream -C -S slaveslot1
+step 5: Standby.Signal được tạo và cài đặt kết nối được thêm vào PostgreSql.Auto.conf.	
+	> ls -ltrh /var/lib/postgresql/16/main/
+step 6: 1 replication slave sẽ chạy ở chế độ hot standby nếu hot_standby = on trong postgresql.conf và có một tệp chờ	
+step 7: kết nối master server, thấy replication slot có tên Soltslave1 khi mở chế độ pg_replication_slots
+	> sudo -u postgres psql<br>SELECT * FROM pg_replication_slots;
+* Test replication setup
+1. start PostgresSQL on slave(stand by) server
+	> systemctl start postgresql
+2.  cố gắng tạo đối tượng hoặc cơ sở dữ liệu trong máy chủ nô lệ (dự phòng). Nó ném lỗi, vì nô lệ (dự phòng) là máy chủ chỉ đọc.
+	> create database slave1;
+3. check status on standby 
+	> SELECT * FROM pg_stat_wal_receiver;
+4. Xác minh loại sao chép đồng bộ hoặc không đồng bộ bằng lệnh bên dưới trên máy chủ cơ sở dữ liệu chính
+	> SELECT * FROM pg_stat_replication;
+5. Cho phép tạo cơ sở dữ liệu trong máy chủ chính và xác minh nó sẽ sao chép thành nô lệ hay không	
+	> create database stream;
+6. kết nối slave và xem db có được copy không 
+	> select datname from pg_database;
+7. bật đồng bộ: chạy lệnh bên dưới trên máy chủ cơ sở dữ liệu chính và tải lại dịch vụ PostgreSQL.
+	> sudo -u postgres psql<br>ALTER SYSTEM SET synchronous_standby_names TO '*';
+	> \q
+	> systemctl reload postgresql
+* Test Replication.
+On master:
+	> sudo -u postgres psql -c "select * from pg_stat_replication;"
+On replica (streaming replication in my case):
+	> sudo -u postgres psql -c "select * from pg_stat_wal_receiver;"
+
+*  Install and Configure PGPool 2
+in Slave 
+	> sudo nano /etc/postgresql/16/main/postgresql.conf
+	> listen_addresses = '*'
+ - save and restart PostgreSQL 
+	> systemctl restart postgresql
+install dependency
+	> sudo apt install pgpool2 -y<br>apt-get -y install postgresql-16-pgpool2
+Configure PGPool Edit the configuration file for PGPool:
+	> sudo nano /etc/pgpool2/pgpool.conf
+set param 
+	> listen_addresses = '*'<br>port = 9999
+config backend connections 
+	> backend_hostname0 = '192.168.224.134'<br>backend_port0 = 5432<br>backend_weight0 = 1<br>backend_data_directory0 = '/var/lib/postgresql/16/main'<br>backend_flag0 = 'ALLOW_TO_FAILOVER'<br>backend_application_name0 = 'server0'
+	> backend_hostname1 = '192.168.224.135'<br>backend_port1 = 5432<br>backend_weight1 = 1<br>backend_data_directory1 = '/var/lib/postgresql/16/main'<br>backend_flag1 = 'ALLOW_TO_FAILOVER'<br>backend_application_name1 = 'server1'
+	> enable_pool_hba = on<br>auth_type = md5<br>pool_passwd = '/etc/pgpool2/pool_passwd'
+	> log_destination = 'stderr'<br>logging_collector = on
+	> log_directory = '/var/log/pgpool'<br>log_filename = 'pgpool.log'
+	> load_balance_mode = on
+	> sr_check_period = 10<br>sr_check_user = 'postgres'<br>sr_check_password = 'admin@123'<br>sr_check_database = 'postgres'
+	> health_check_period = 10<br>health_check_timeout = 20<br>health_check_user = 'postgres'<br>health_check_password = 'admin@123'<br>health_check_database = 'postgres'<br>health_check_max_retries = 3<br>health_check_retry_delay = 5
+	> failover_command = '/etc/pgpool2/failover.sh %d %P %H %M %R'<br>failback_command = '/etc/pgpool2/failback.sh %d %P %H %M %R'
+	> failover_on_backend_error = on
+	> #recovery_1st_stage_command = 'recovery_1st_stage.sh'
+	> hostname0 = ''
+Pool settings:
+	> num_init_children = 32<br>max_pool = 4
+Replication configuration:: 
+	> load_balance_mode = on<br>//replication_mode = on
+//Configure pg_hba.conf
+	> sudo nano /etc/pgpool2/pcp.conf
+Add the authentication line:	
+	> replicator:admin@123
+	> sudo vi /etc/pgpool2/pool_hba.conf
+	> host all postgres 192.168.224.134/32 md5<br>host all postgres 192.168.224.135/32 md5
+Create failover.sh and failback.sh file:
+	> sudo vi /etc/pgpool2/failover.sh
+	> #!/bin/bash
+		FAILED_NODE_ID=$1
+		NEW_PRIMARY_HOST=$3
+		# If the master fails (node 0), promote the standby to primary
+		if [ $FAILED_NODE_ID -eq 0 ]; then
+		echo "Failover detected. Promoting standby (node 1) to primary..."
+		psql -h $NEW_PRIMARY_HOST -U postgres -c "SELECT pg_promote();"
+		fi
+		exit 0
+sudo vi /etc/pgpool2/failback.sh
+	> #!/bin/bash
+		FAILED_NODE_ID=$1
+		echo "Reattaching node $FAILED_NODE_ID to pgpool-II after recovery."
+		exit 0
+#/etc/pgpool2/pool_passwd
+	> sudo pg_md5 -m -u postgres 'admin@123'
+	> sudo chown postgres:postgres /etc/pgpool2/failover.sh<br>sudo chown postgres:postgres /etc/pgpool2/failback.sh
+	> sudo chmod +x /etc/pgpool2/failover.sh
+	> sudo chmod +x /etc/pgpool2/failback.sh
+	> sudo mkdir -p /var/log/pgpool<br>sudo chown postgres:postgres /var/log/pgpool
+Start PGPool:
+	> sudo systemctl start pgpool2<br>sudo systemctl enable pgpool2
+Open PostgreSQL in Master Server:	
+	> sudo tail -f /var/log/postgresql/postgresql-16-main.log
+Restart PGPool 2 Server:
+	> sudo systemctl restart pgpool2
+Open PGPool in PGPool Server:
+	> sudo tail -f /var/log/pgpool/pgpool.log
+Connect from any client:
+	> psql -h 192.168.224.147 -p 9999 -U postgres
+	  SHOW pool_nodes;
+I. Triển khai PgPool II 
+1. Set up Streaming Replication 
+ * trong nano /tmp/primary_db/postgresql.conf 
+    - listen_address = '*' what ip address to listen on 
+    - port = 5432
+    - pg_ctl -D /tmp/primary_db start => start db 
+ * connect postgresql để test 
+    - psql --port 5432 postgres 
+    - create user repuser replication; #đặt replication flag 
+ * trong nano /tmp/primary_db/pg-hba.conf để kiểm soát kết nối 
+    - trog IPv4 local connections 
+     => thêm host all   repuser(user vừa tạo ở trên) address(giữ nguyên) trust
+    - pg_ctl -D /tmp/primary_db restart => restart db 
+ * Tạo DB rep 
+    - pg_basebackup -h localhost -U repuser (user cấu hình ở master) --checkpoint=fast (sao chép dữ liệu luôn) -D /tnp/replica_db/ (folder lưu dữ liệu sao chép) -R --slot=some_name -C --port=5432
+ * Nếu chung cổng trong 1 server thì sửa port cửa postgres khác nhau tránh xung đột 
+    - nano /tmp/replica_db/postgresql.config
+    - pg_ctl -D /tmp/replica_db start
+2. Load-Balancing 
+ * trong /usr/local/etc 
+    - cp pgpool.conf.sample pgpool.conf (để tạo file cấu hình riêng)
+    - nano pgpool.conf 
+        + backend_clustering_mode = 'streaming_replication' (phương thức sao chép mặc định là streaming_replication sao chép trực tuyến)
+        + listen_address = '*' (lắng nghe các server bên ngoài)
+        + port=9999 (port mặc định)
+    - authentication 
+        + enable_pool_hba = on (kích hoạt sử dụng file pool_hba.conf để xác thực kết nối từ client đến pgpool)
+        + backend_authentication_method = md5 (phương thức xác thực với pgpool)
+        + pool_passwd = 'etc/pgpool2/pool_passowd' (đường dẫn đến file chứa username/pass đã mã hóa)
+ * setup postgres trong pgpool.conf -> Backend Connection Settings 
+    - config master postgresql 
+        server master
+            + backend_hostname0 = 'localhost'
+            + backend_port0 = 
+            + backend_weight0 =0  (0 cho master, 1 cho server worker 1, 2 cho server worker 2) tương ứng 1/3 selects cho worker 1, 2/3 cho worker 2
+            + backend_data_directory0 = '/tmp/primary_db/'
+        server worker 1
+            + backend_hostname1 = 'localhost'
+            + backend_port1 = 
+            + backend_weight1 =1  (0 cho master, 1 cho server worker 1, 2 cho server worker 2) tương ứng 1/3 selects cho worker 1, 2/3 cho worker 2
+            + backend_data_directory0 = '/tmp/replica_db/'
+        
+    - set user streaming replication 
+        sr_check_user = 'repuser'
+        sr_check_password =  
+    - enable log 
+        log_statement = on 
+        log_per_node_statement = 0
+        pid_file_name = 'pgpool.pid'
+        log_destination = 'stderr' (các logs sẽ được ghi vào luồng lỗi chuẩn (standard error))
+         => nếu logging_collector on thì luồng stderr sẽ được ghi vào file log còn off thì xuất log ở console
+        logging_collector: on (kích hoạt tiến trình để thu thập log)
+        log_directory = 'var/log/pgpool' (nơi file log được tạo khi logging_collector = on)
+        log_filename = 'pgpool.log'
+    - Kích hoạt load Balancing
+        load_balance_mode = on (kích hoạt chế độ load blancing execute đến master và select đến worker)
+    - 
+    - set health chạy sau mỗi 10s 
+        health_check_period = 10
+        health_check_user = 'repuser'
+        health_check_password = 
+ * Test loadblacing & read/write separation 
+    - etc pgpool -n & (để pgpool chạy như 1 tiến trình không phải daemon và thiết bị đầu cuối sẽ không bị tách rời)
+    - trong postgres: replica_db psql -p 9999 postgres
+                    + chạy lệnh create create table tbl1(id int);
+                    + insert: insert into tbl1 values(1)
+                    + select * from tbl1 
+            => kiểm tra select server backend 1, insert sever backend 0 => success
+ * Config Postgres primary server
+    - trong /tmp/primary_db/postgresql.conf 
+        + synchronous_commit = remote_apply 
+        + synchronous_standby_names = '*' (tất cả các bản *)
+    - khởi động lại máy chủ 
+        + etc pg_ctl -D /tmp/primary_db restart
+    - enable log wag khi error 
+        + wal_log_hints = on
+    trong file failover.sh 
+        + etc nano /tmp/pgsql/failover.sh
+            trigger_file: tệp kích hoạt khi master lỗi 
+    => khi chế độ sao chép ở trong chế độ chờ thì sẽ được thăng cấp lên master và chuyển chế độ execute sang         
+    trong file /usr/local/etc/pgpool.conf của pgpool
+        + failover_command = '/tmp/pgsql/failover.sh (chi định vị trí của tập lệnh) %d (cho nút fail) /tmp/replica_db/down_trg '
+        + failover_on_backend_error = on (khi kết nối đến node backend lỗi sẽ kích hoạt cơ chế failover)
+    * trong máy chủ replica, file /tmp/replica_db/postgresql.conf 
+        + promote_trigger_file = '/tmo/replica_db/down_trg' (tên tệp có sự hiện diện kết thúc recovery trong chế độ chờ bất cứ khi nào)
+        + pg_ctl -D /tmp/replica_db restart 
+ * sửa file pool_hba.conf 
+    thêm replicator:admin@123
+ * sửa ip v4 của pgpools 
+    host all postgres ip_postgres_1 md5 
+    host all postgres ip_postgres_2 md5
+
+ * Test Fail Over 
+    etc pgpool -n & 
+ * Failover Recap 
+ 1. Pgpool II detects PostgreSQL Master is down 
+ 2. Failover script is executed thực thi script failover
+ 3. Failover script creates the trigger file on the Replica (tạo têp failovert script trong máy chủ rep)
+ 4. PostgreSQL Replica detects the trigger file 
+ 5. PostgreSQL Replica reboots in read/write mode and completes recover (máy chủ phụ khởi động lại ở chế độ READ/WRITE)
