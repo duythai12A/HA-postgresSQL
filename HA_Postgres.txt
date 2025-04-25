@@ -243,3 +243,85 @@ I. Triển khai PgPool II
  3. Failover script creates the trigger file on the Replica (tạo têp failovert script trong máy chủ rep)
  4. PostgreSQL Replica detects the trigger file 
  5. PostgreSQL Replica reboots in read/write mode and completes recover (máy chủ phụ khởi động lại ở chế độ READ/WRITE)
+
+
+#!/bin/bash
+
+# Các tham số được truyền từ công cụ failover (ví dụ: Pgpool-II)
+# Kiểm tra tài liệu của công cụ để biết ý nghĩa chính xác và thứ tự!
+FAILED_NODE_ID=$1
+FAILED_HOST=$2       # Hostname của node bị lỗi (có thể cần dùng)
+NEW_PRIMARY_HOST=$3  # Hostname của standby được CHỌN để promote
+FAILED_NODE_ROLE=$?  # ID của node bị lỗi (ví dụ từ Pgpool %d)
+# Thêm các tham số khác nếu cần...
+
+echo "--- Failover Script Triggered ---"
+echo "Failed Node ID: $FAILED_NODE_ID"
+echo "Failed Host: $FAILED_HOST"
+echo "New Primary Host designated by caller: $NEW_PRIMARY_HOST"
+# Bạn có thể cần thêm logic để xác định vai trò của FAILED_NODE_ID nếu công cụ không truyền trực tiếp
+
+# Chỉ thực hiện promote nếu công cụ gọi đã chỉ định một host mới để làm primary
+# Và có thể thêm điều kiện kiểm tra vai trò của node bị lỗi nếu cần/có thể
+if [ -n "$NEW_PRIMARY_HOST" ]; then
+  # Có thể thêm kiểm tra xem FAILED_NODE_ID có phải là primary hiện tại không nếu cần
+  # is_primary=$(psql -h $FAILED_HOST -U postgres -tAc "SELECT pg_is_in_recovery();")
+  # if [ "$is_primary" == "f" ]; then ... # Logic phức tạp hơn
+
+  echo "Attempting to promote designated host '$NEW_PRIMARY_HOST' to primary..."
+  # Quan trọng: Đảm bảo user postgres có thể kết nối không cần mật khẩu
+  if psql -h "$NEW_PRIMARY_HOST" -U postgres -c "SELECT pg_promote(wait := true, wait_seconds := 60);"; then
+    echo "SUCCESS: Promotion command sent successfully to $NEW_PRIMARY_HOST."
+    exit 0 # Báo thành công
+  else
+    echo "ERROR: Failed to execute pg_promote() on $NEW_PRIMARY_HOST. Exit code: $?"
+    exit 1 # Báo lỗi
+  fi
+
+else
+  echo "No new primary host designated by the caller, or condition not met. No promotion action taken."
+  # Quyết định xem nên exit 0 hay 1 ở đây tùy thuộc vào yêu cầu.
+  # Nếu việc không có NEW_PRIMARY_HOST là bình thường (ví dụ: standby lỗi), thì exit 0.
+  exit 0
+fi
+
+echo "--- Failover Script Finished ---"
+
+#!/bin/bash
+
+NODE_TO_ATTACH=$1
+
+# --- Thông tin kết nối PCP (Thay đổi nếu cần) ---
+PGPOOL_HOST="localhost"  # Hoặc IP/hostname của server chạy Pgpool-II
+PCP_PORT="9898"          # Port PCP mặc định
+PCP_USER="your_pcp_user" # User PCP đã cấu hình
+# Mật khẩu PCP nên được lưu trong file ~/.pcppass để tránh lộ trong script
+# Hoặc bạn có thể cần export biến môi trường PCPPASSWORD trước khi chạy script
+# Ví dụ file ~/.pcppass (quyền 600): hostname:port:username:password
+PCP_TIMEOUT=10           # Thời gian chờ (giây)
+
+echo "--- Fallback Script Triggered ---"
+echo "Attempting to reattach node $NODE_TO_ATTACH to Pgpool-II..."
+
+if [ -z "$NODE_TO_ATTACH" ]; then
+  echo "ERROR: Node ID to attach is missing."
+  exit 1
+fi
+
+# --- Thực thi lệnh PCP để attach node ---
+# Đảm bảo user chạy script này có file ~/.pcppass hợp lệ hoặc biến PCPPASSWORD
+pcp_attach_node -h $PGPOOL_HOST -p $PCP_PORT -U $PCP_USER -w --timeout=$PCP_TIMEOUT $NODE_TO_ATTACH
+
+# --- Kiểm tra mã thoát của lệnh pcp ---
+PCP_EXIT_CODE=$?
+if [ $PCP_EXIT_CODE -eq 0 ]; then
+  echo "SUCCESS: Node $NODE_TO_ATTACH successfully attached (command sent)."
+  exit 0 # Báo thành công
+else
+  echo "ERROR: Failed to attach node $NODE_TO_ATTACH. pcp_attach_node exited with code $PCP_EXIT_CODE."
+  # Có thể thêm các thông báo lỗi chi tiết hơn nếu pcp cung cấp
+  exit 1 # Báo lỗi
+fi
+
+echo "--- Fallback Script Finished ---"
+
