@@ -1,0 +1,387 @@
+1. Prerequisites
+
+PostgreSQL 17 installed and running
+
+A non-root user with sudo privileges
+
+A PostgreSQL superuser (e.g., postgres)
+
+Network access between the backup server and database server (if remote backups are planned)
+
+If PostgreSQL 17 is not installed then install with below command.
+
+Installation, and Configuration PostgreSQL 17 on Ubuntu 24.04 LTS
+
+1. Update and Upgrade the System and Install PostgreSQL 17
+
+First, update your system packages to ensure everything is up-to-date.
+
+sudo apt update
+sudo apt upgrade -y
+
+i. Add the PostgreSQL APT Repository
+
+To get PostgreSQL 17, we need to add the official PostgreSQL APT repository.
+
+sudo apt install -y curl ca-certificates
+sudo install -d /usr/share/postgresql-common/pgdg
+sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+Next, add the PostgreSQL repository:
+
+sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+ii. Install PostgreSQL 17
+
+After adding the repository, update the package list and install PostgreSQL 17.
+
+sudo apt update
+sudo apt -y install postgresql postgresql-client
+
+iii. Start and Enable PostgreSQL Service
+
+Ensure the PostgreSQL service starts automatically.
+
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+2. Install pgBackRest
+
+2.1 Update the System
+
+sudo apt update && sudo apt upgrade -y
+
+2.2 Install Required Dependencies
+
+sudo apt install wget gnupg2 lsb-release -y
+
+2.3 Install pgBackRest
+
+sudo apt install pgbackrest -y
+
+Verify Installation:
+
+pgbackrest --version
+
+3. Configure pgBackRest
+
+3.1 Create Backup Directory
+
+sudo mkdir -p /var/lib/pgbackrest
+sudo chown postgres:postgres /var/lib/pgbackrest
+sudo chmod 750 /var/lib/pgbackrest
+
+3.2 Create Configuration File
+
+Edit the pgBackRest configuration file:
+
+sudo nano /etc/pgbackrest.conf
+
+Add the following configuration:
+
+[global]
+repo1-path=/var/lib/pgbackrest
+repo1-retention-full=2
+repo1-retention-diff=4
+log-level-console=info
+log-level-file=debug
+log-path=/var/log/pgbackrest
+
+[pg17]
+pg1-path=/var/lib/postgresql/17/main 
+pg1-port=5432 
+pg1-user=postgres
+
+Save and exit.
+
+3.3 Set Permissions for the Config File
+
+sudo chmod 640 /etc/pgbackrest.conf
+sudo chown postgres:postgres /etc/pgbackrest.conf
+
+4. Configure PostgreSQL for pgBackRest
+
+4.1 Enable Archive Mode
+
+Edit the postgresql.conf file:
+
+sudo nano /etc/postgresql/17/main/postgresql.conf
+
+Add/Update the following lines:
+
+archive_mode = on
+archive_command = 'pgbackrest --stanza=pg17 archive-push %p'
+wal_level = replica
+max_wal_senders = 3
+
+4.2 Restart PostgreSQL
+
+sudo systemctl restart postgresql
+
+5. Create a Stanza
+
+A stanza represents a configured database cluster.
+
+sudo -u postgres pgbackrest --stanza=pg17 --log-level-console=info stanza-create
+
+Check the Stanza Status:
+
+sudo -u postgres pgbackrest --stanza=pg17 --log-level-console=info check
+
+Testing data:
+
+Let’s perform the following steps to create a database, create a table, and insert sample data in PostgreSQL 17 for testing purposes.
+
+1. Access PostgreSQL Shell
+
+Log in as the postgres user:
+
+sudo -u postgres psql
+
+2. Create a Test Database
+
+CREATE DATABASE test_db;
+
+Switch to the new database:
+
+\c test_db
+
+3. Create a Test Table
+
+CREATE TABLE employees (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    position VARCHAR(50),
+    salary NUMERIC(10, 2)
+);
+
+4. Insert Sample Data
+
+INSERT INTO employees (name, position, salary) VALUES 
+('Arun Mahto', 'Manager', 75000.00),
+('Purab Kumar', 'Sr. Developer', 60000.00),
+('Dhruv Sanchit', 'Jr. Developer', 50000.00);
+
+5. Query the Table
+
+Verify the inserted data:
+
+SELECT * FROM employees;
+
+You should see output like:
+
+test_db=# SELECT * FROM employees;
+
+ id |     name      |   position    |  salary
+----+---------------+---------------+----------
+  1 | Arun Mahto    | Manager       | 75000.00
+  2 | Purab Kumar   | Sr. Developer | 60000.00
+  3 | Dhruv Sanchit | Jr. Developer | 50000.00
+(3 rows)
+
+6. Exit PostgreSQL Shell
+
+Exit the PostgreSQL prompt:
+
+\q
+
+6. Perform Backups
+
+6.1 Full Backup
+
+sudo -u postgres pgbackrest --stanza=pg17 --type=full backup
+
+6.2 Differential Backup
+
+sudo -u postgres psql
+\c test_db
+
+Insert again some Data:
+
+INSERT INTO employees (name, position, salary) VALUES 
+('Sanju Mehta', 'DBA', 70000.00),
+('Arun Kumar', 'Sr. Developer', 50000.00),
+('Ram Kishore', 'Jr. Developer', 40000.00);
+
+Verify the inserted data:
+
+SELECT * FROM employees;
+
+You should see output like:
+
+test_db=# SELECT * FROM employees;
+ id |     name      |   position    |  salary
+----+---------------+---------------+----------
+  1 | Arun Mahto    | Manager       | 75000.00
+  2 | Purab Kumar   | Sr. Developer | 60000.00
+  3 | Dhruv Sanchit | Jr. Developer | 50000.00
+  4 | Sanju Mehta   | DBA           | 70000.00
+  5 | Arun Kumar    | Sr. Developer | 50000.00
+  6 | Ram Kishore   | Jr. Developer | 40000.00
+(6 rows)
+
+
+sudo -u postgres pgbackrest --stanza=pg17 --type=diff backup
+
+6.3 Incremental Backup
+
+sudo -u postgres psql
+\c test_db
+
+Insert again some Data:
+
+INSERT INTO employees (name, position, salary) VALUES 
+('Kumar Gaurav', 'DEO', 34000.00),
+('Madhu Kumari', 'System Admin', 45000.00),
+('Kesri Ram', 'Accountant', 50000.00);
+
+Verify the inserted data:
+
+SELECT * FROM employees;
+
+You should see output like:
+
+test_db=# SELECT * FROM employees;
+ id |     name      |   position    |  salary
+----+---------------+---------------+----------
+  1 | Arun Mahto    | Manager       | 75000.00
+  2 | Purab Kumar   | Sr. Developer | 60000.00
+  3 | Dhruv Sanchit | Jr. Developer | 50000.00
+  4 | Sanju Mehta   | DBA           | 70000.00
+  5 | Arun Kumar    | Sr. Developer | 50000.00
+  6 | Ram Kishore   | Jr. Developer | 40000.00
+  7 | Kumar Gaurav  | DEO           | 34000.00
+  8 | Madhu Kumari  | System Admin  | 45000.00
+  9 | Kesri Ram     | Accountant    | 50000.00
+(9 rows)
+
+sudo -u postgres pgbackrest --stanza=pg17 --type=incr backup
+
+6.4 Verify Backups
+
+sudo -u postgres pgbackrest --stanza=pg17 info
+
+7. Restore Backup
+
+7.1 Stop PostgreSQL
+
+sudo systemctl stop postgresql
+
+7.2 Restore
+
+Option 1: Restore with –delta (Recommended for Partial Restore)
+
+The –delta option allows pgBackRest to restore only the changed files, reducing time and risk.
+
+sudo systemctl stop postgresql
+sudo -u postgres pgbackrest --stanza=pg17 --delta restore
+
+Once the restore is complete, restart PostgreSQL:
+
+sudo systemctl start postgresql
+
+Check the status:
+
+sudo systemctl status postgresql
+
+Option 2: Perform a Full Clean Restore
+
+If you want to fully restore the database without any remnants from the existing data directory:
+
+1. Stop PostgreSQL
+
+sudo systemctl stop postgresql
+
+2. Backup Existing Data Directory (Optional but Recommended)
+
+Create a backup of the current data directory:
+
+sudo mv /var/lib/postgresql/17/main /var/lib/postgresql/17/main_backup_$(date +%F)
+sudo mkdir /var/lib/postgresql/17/main
+sudo chown -R postgres:postgres /var/lib/postgresql/17/main
+sudo chmod 700 /var/lib/postgresql/17/main
+
+3. Perform the Restore
+
+sudo -u postgres pgbackrest --stanza=pg17 restore
+
+This time, it should run without issues.
+
+4. Start PostgreSQL
+
+sudo systemctl start postgresql
+
+Verify PostgreSQL is running:
+
+sudo systemctl status postgresql
+
+5. Check Database Integrity
+
+Connect to PostgreSQL and ensure the restore was successful:
+
+sudo -u postgres psql -c "SELECT datname FROM pg_database;"
+
+Verify Logs After Restore
+
+Check the pgBackRest logs to ensure everything went smoothly:
+
+sudo tail -f /var/log/pgbackrest/pgbackrest.log
+
+Summary of Differences Between the Two Options
+
+Method When to Use Effect
+
+–delta Partial Restore Restores only changed files
+
+Clean Restore Full Restore Wipes data and fully restores
+
+If you are recovering from corruption, a clean restore is better.
+
+If you are recovering from data loss or specific issues, use –delta.
+
+7.3 Start PostgreSQL
+
+sudo systemctl start postgresql
+
+8. Automate Backups with Cron
+
+Edit the crontab for postgres user:
+
+sudo crontab -u postgres -e
+
+Add the following lines:
+
+# Full Backup every Sunday at 2 AM
+
+0 2 * * 0 pgbackrest --stanza=pg17 --type=full backup
+
+# Incremental Backup every day at 2 AM (except Sunday)
+
+0 2 * * 1-6 pgbackrest --stanza=pg17 --type=incr backup
+
+9. Monitor pgBackRest Logs
+
+Logs are stored at:
+
+sudo tail -f /var/log/pgbackrest/pgbackrest.log
+
+10. Test Recovery Plan
+
+Regularly test backup restoration to ensure reliability.
+
+Document the recovery process.
+
+11. Troubleshooting
+
+Check PostgreSQL and pgBackRest logs:
+
+sudo journalctl -u postgresql
+sudo tail -f /var/log/pgbackrest/pgbackrest.log
+
+Verify configuration:
+
+sudo -u postgres pgbackrest --stanza=pg17 check
+
+Conclusion
+
+You’ve successfully installed, configured, and tested pgBackRest for PostgreSQL 17 on Ubuntu 24.04 LTS. Regular backups and periodic recovery tests will ensure database resilience and reliability
