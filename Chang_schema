@@ -2,3 +2,10 @@ pg_dump -U postgres -F c -n public -f /etc/pgpool2/data/test_db_proper.dump test
 pg_restore -U postgres -d test_db  /etc/pgpool2/data/test_db_proper.dump
 sed 's/public\./vlp\./g' test_db.sql | sed 's/OWNER TO public;/OWNER TO vlp;/g' > test_db_vlp.sql
 psql -U postgres -d test_db -f test_db_vlp.sql
+
+
+# Thay thế "public." bằng "vlp." và một số trường hợp khác
+sed -e 's/\bpublic\./vlp\./g' \
+    -e 's/SCHEMA public/SCHEMA vlp/g' \
+    -e 's/OWNER TO public/OWNER TO postgres/g' \
+    public_schema.sql > vlp_schema.sql
