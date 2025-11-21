@@ -1,17 +1,10 @@
-# Tạo replication slot trên NEW PRIMARY (master mới)
-ssh ${SSH_OPTIONS} ${POSTGRESQL_STARTUP_USER}@${NEW_PRIMARY_NODE_HOST} \
-  "${PGHOME}/bin/psql -p ${NEW_PRIMARY_NODE_PORT} -d postgres -v ON_ERROR_STOP=1 -c \
-  \"DO \$\$ 
-     BEGIN
-       IF NOT EXISTS (
-         SELECT 1 FROM pg_replication_slots WHERE slot_name = '${SLOT_NAME}'
-       ) THEN
-         PERFORM pg_create_physical_replication_slot('${SLOT_NAME}');
-       END IF;
-     END;
-   \$\$;\""
-RET=$?
-if [ $RET -ne 0 ]; then
-  echo \"[follow_primary] Failed to create replication slot ${SLOT_NAME} on ${NEW_PRIMARY_NODE_HOST}\"
-  exit 1
+# Create replication slots if not exist on the new primary
+echo "🔄 Checking and creating replication slots on $NEW_PRIMARY_NODE_HOST if missing..."
+
+psql -U postgres -h "$NEW_PRIMARY_NODE_HOST" -p "$NEW_PRIMARY_NODE_PORT" -c "SELECT slot_name FROM pg_replication_slots;" | grep -q "$SLOT01"
+if [ $? -ne 0 ]; then
+  echo "➕ Creating slot $SLOT01"
+  psql -U postgres -h "$NEW_PRIMARY_NODE_HOST" -p "$NEW_PRIMARY_NODE_PORT" -c "SELECT * FROM pg_create_physical_replication_slot('$SLOT01');"
 fi
+
+...
